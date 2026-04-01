@@ -69,6 +69,10 @@ Docs: https://docs.openclaw.ai
 - Auth/OpenAI Codex: persist plugin-refreshed OAuth credentials to `auth-profiles.json` before returning them, so rotated Codex refresh tokens survive restart and stop falling into `refresh_token_reused` loops. (#53082)
 - Discord/gateway: hand reconnect ownership back to Carbon, keep runtime status aligned with close/reconnect state, and force-stop sockets that open without reaching READY so Discord monitors recover promptly instead of waiting on stale health timeouts. (#59019) Thanks @obviyus
 
+### Fixes
+
+- Telegram/exec approvals: preserve `agentFilter` matching when the agent is only encoded in `sessionKey`, so Telegram approval requests keep reaching configured approvers after the shared approval-capability refactor. (#58634) thanks @gumadeiras
+
 ## 2026.3.31
 
 ### Breaking
