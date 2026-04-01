@@ -8,6 +8,8 @@ Docs: https://docs.openclaw.ai
 
 ### Fixes
 
+- Exec approvals: route Slack, Discord, and Telegram approvals through the shared channel approval-capability path so native approval auth, delivery, and `/approve` handling stay aligned across channels while preserving Telegram session-key agent filtering. (#58634) thanks @gumadeiras
+
 ## 2026.4.1-beta.1
 
 ### Changes
@@ -70,8 +72,6 @@ Docs: https://docs.openclaw.ai
 - Discord/gateway: hand reconnect ownership back to Carbon, keep runtime status aligned with close/reconnect state, and force-stop sockets that open without reaching READY so Discord monitors recover promptly instead of waiting on stale health timeouts. (#59019) Thanks @obviyus
 
 ### Fixes
-
-- Telegram/exec approvals: preserve `agentFilter` matching when the agent is only encoded in `sessionKey`, so Telegram approval requests keep reaching configured approvers after the shared approval-capability refactor. (#58634) thanks @gumadeiras
 
 ## 2026.3.31
 
