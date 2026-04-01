@@ -1,0 +1,25 @@
+# Custom overlay: add your tools on top of the base openclaw image.
+# Build:
+#   docker build -t openclaw:local -f Dockerfile .
+#   docker build -t openclaw:custom -f Dockerfile.custom .
+# Run:
+#   OPENCLAW_IMAGE=openclaw:custom ./scripts/docker/setup.sh
+
+FROM openclaw:local
+
+USER root
+
+# GitHub CLI
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gh && \
+    rm -rf /var/lib/apt/lists/*
+
+# Add more tools below as needed, e.g.:
+# RUN apt-get update && apt-get install -y --no-install-recommends python3 ripgrep && rm -rf /var/lib/apt/lists/*
+
+USER node
