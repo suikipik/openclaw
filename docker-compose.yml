@@ -1,6 +1,19 @@
 services:
+  whisper:
+    build: ./whisper
+    environment:
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      WHISPER_DEVICE: cpu
+      WHISPER_COMPUTE_TYPE: int8
+    ports:
+      - "${WHISPER_PORT:-8000}:8000"
+    restart: unless-stopped
+
   openclaw-gateway:
     image: ${OPENCLAW_IMAGE:-openclaw:local}
+    depends_on:
+      whisper:
+        condition: service_healthy
     environment:
       HOME: /home/node
       TERM: xterm-256color
@@ -11,7 +24,7 @@ services:
       CLAUDE_WEB_COOKIE: ${CLAUDE_WEB_COOKIE:-}
       GH_TOKEN: ${GH_TOKEN:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-local}
       GIT_AUTHOR_NAME: ${GIT_USER_NAME:-}
       GIT_COMMITTER_NAME: ${GIT_USER_NAME:-}
       GIT_AUTHOR_EMAIL: ${GIT_USER_EMAIL:-}
@@ -75,7 +88,7 @@ services:
       CLAUDE_WEB_COOKIE: ${CLAUDE_WEB_COOKIE:-}
       GH_TOKEN: ${GH_TOKEN:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-local}
       GIT_AUTHOR_NAME: ${GIT_USER_NAME:-}
       GIT_COMMITTER_NAME: ${GIT_USER_NAME:-}
       GIT_AUTHOR_EMAIL: ${GIT_USER_EMAIL:-}
