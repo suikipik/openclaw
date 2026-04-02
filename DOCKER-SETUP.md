@@ -19,6 +19,8 @@ This guide is designed to be followed by an AI agent assisting a human. Each ste
 | `GH_TOKEN` | Human provides (https://github.com/settings/tokens) | `.env` |
 | `CLAUDE_OAUTH_TOKEN` | Human runs `claude setup-token` and provides output | `~/.openclaw/agents/main/agent/auth-profiles.json` |
 | `TELEGRAM_BOT_TOKEN` | Human creates bot via @BotFather on Telegram | `.env`, `docker-compose.yml`, `~/.openclaw/openclaw.json` |
+| `GIT_USER_NAME` | Human provides | `.env` (passed as `GIT_AUTHOR_NAME`/`GIT_COMMITTER_NAME`) |
+| `GIT_USER_EMAIL` | Human provides | `.env` (passed as `GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_EMAIL`) |
 
 ## Step 1: Fork and clone the repo
 
@@ -92,9 +94,16 @@ OPENCLAW_GATEWAY_BIND=lan
 OPENCLAW_CONFIG_DIR=~/.openclaw
 OPENCLAW_WORKSPACE_DIR=~/.openclaw/workspace
 GH_TOKEN=<ASK HUMAN: GitHub personal access token>
+GIT_USER_NAME=<ASK HUMAN: Git commit author name (e.g. GitHub username)>
+GIT_USER_EMAIL=<ASK HUMAN: Git commit email>
 ```
 
-**Agent instruction:** Do not use `cp .env.example` -- write the `.env` file directly with the values above. After writing, ask the human to provide their `GH_TOKEN` value. Write it into `.env` once provided. Validate it starts with `ghp_` (classic) or `github_pat_` (fine-grained).
+**Agent instruction:** Do not use `cp .env.example` -- write the `.env` file directly with the values above. Ask the human to provide:
+- `GH_TOKEN`: GitHub personal access token. Validate it starts with `ghp_` (classic) or `github_pat_` (fine-grained).
+- `GIT_USER_NAME`: their GitHub username or preferred git author name.
+- `GIT_USER_EMAIL`: their git commit email.
+
+Also add the GitHub username and email to the `Owner Identity` section of `~/.openclaw/workspace/AGENTS.md` so OpenClaw knows the human's GitHub username for cloning personal repos.
 
 ## Step 5: Configure Claude Pro authentication
 
@@ -162,11 +171,18 @@ claude setup-token
     "defaults": {
       "model": {
         "primary": "anthropic/claude-sonnet-4-6"
-      }
+      },
+    }
+  },
+  "tools": {
+    "exec": {
+      "security": "full"
     }
   }
 }
 ```
+
+`tools.exec.security: "full"` auto-approves all command execution without prompting. This is safe because the Docker container is isolated -- it can only access the workspace and config volumes, not the host filesystem. Access is further locked by `dmPolicy: "allowlist"` on Telegram.
 
 ## Step 6: Update `docker-compose.yml`
 
@@ -385,6 +401,14 @@ The gateway looks for `auth-profiles.json` in `~/.openclaw/agents/main/agent/`, 
 ### Connection reset on health check right after start
 
 The gateway needs a few seconds to initialize. Wait 8-10 seconds after `docker compose up` before probing `/healthz`.
+
+### Config invalid: Unrecognized key under agents.defaults
+
+`openclaw.json` is strict about its schema. Common mistakes:
+- `elevated` belongs under `tools.exec.security`, not `agents.defaults.elevated`
+- `auth.profiles` is a top-level key, not under `agents.defaults.auth`
+
+If the gateway crash-loops with "Config invalid", check `docker compose logs openclaw-gateway` for the exact rejected key.
 
 ### GH_TOKEN picked up as github-copilot provider
 
