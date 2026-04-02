@@ -353,6 +353,59 @@ docker compose run --rm -T openclaw-cli pairing approve telegram <PAIRING_CODE>
 
 The human can now message the bot on Telegram and OpenClaw will respond.
 
+## Step 12: Enable voice message transcription (optional)
+
+**Requires human input** for the Deepgram API key.
+
+### 12a. Get a Deepgram API key
+
+**Human must do this** at https://console.deepgram.com (free tier with $200 credit).
+
+### 12b. Configure Deepgram
+
+**Agent can automate** once the key is provided.
+
+1. Add `DEEPGRAM_API_KEY=<key>` to `.env`
+2. Add `DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}` to the `environment` block of both services in `docker-compose.yml`
+3. Add `ffmpeg` to `Dockerfile.custom` (needed for audio format conversion)
+4. Enable the Deepgram plugin and audio config in `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "deepgram": {
+        "enabled": true
+      }
+    }
+  },
+  "tools": {
+    "media": {
+      "audio": {
+        "enabled": true,
+        "models": [
+          { "provider": "deepgram", "model": "nova-3" }
+        ],
+        "providerOptions": {
+          "deepgram": {
+            "detect_language": true,
+            "punctuate": true,
+            "smart_format": true
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+5. Rebuild the custom image (`docker build -t openclaw:custom -f Dockerfile.custom .`)
+6. Recreate the container (`docker compose down && docker compose up -d openclaw-gateway`)
+
+**Important:** The Deepgram plugin must be explicitly enabled via `plugins.entries.deepgram.enabled: true`. The audio config alone is not enough.
+
+**Note:** `detect_language: true` enables automatic French/English (and other languages) detection.
+
 ## Day-to-day commands
 
 ```bash
@@ -409,6 +462,14 @@ The gateway needs a few seconds to initialize. Wait 8-10 seconds after `docker c
 - `auth.profiles` is a top-level key, not under `agents.defaults.auth`
 
 If the gateway crash-loops with "Config invalid", check `docker compose logs openclaw-gateway` for the exact rejected key.
+
+### New env vars not picked up after restart
+
+`docker compose restart` reuses the existing container -- it does NOT re-read `.env`. You must recreate the container:
+
+```bash
+docker compose down && docker compose up -d openclaw-gateway
+```
 
 ### GH_TOKEN picked up as github-copilot provider
 
