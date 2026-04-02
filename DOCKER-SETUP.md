@@ -355,56 +355,91 @@ The human can now message the bot on Telegram and OpenClaw will respond.
 
 ## Step 12: Enable voice message transcription (optional)
 
-**Requires human input** for the Deepgram API key.
+**Agent can automate.** No external API key needed -- transcription runs locally via a self-hosted Whisper container.
 
-### 12a. Get a Deepgram API key
+### 12a. Whisper Docker image
 
-**Human must do this** at https://console.deepgram.com (free tier with $200 credit).
+The `whisper/` directory contains a custom Docker image that runs [faster-whisper](https://github.com/SYSTRAN/faster-whisper) behind a minimal FastAPI server exposing an OpenAI-compatible `/v1/audio/transcriptions` endpoint.
 
-### 12b. Configure Deepgram
+Available models (set via `WHISPER_MODEL` in `.env`):
 
-**Agent can automate** once the key is provided.
+| Model | Size | RAM | Speed (30s audio) | Quality |
+|-------|------|-----|-------------------|---------|
+| `tiny` | 75 MB | ~150 MB | ~2s | Basic |
+| `base` | 140 MB | ~300 MB | ~3s | Decent |
+| **`small`** | 460 MB | ~1 GB | **~5s** | **Good (recommended)** |
+| `medium` | 1.5 GB | ~3 GB | ~12s | Very good |
+| `large-v3` | 3 GB | ~6 GB | ~25s | Excellent |
 
-1. Add `DEEPGRAM_API_KEY=<key>` to `.env`
-2. Add `DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}` to the `environment` block of both services in `docker-compose.yml`
-3. Add `ffmpeg` to `Dockerfile.custom` (needed for audio format conversion)
-4. Enable the Deepgram plugin and audio config in `~/.openclaw/openclaw.json`:
+The model is downloaded automatically on first transcription request.
+
+### 12b. Configure Whisper
+
+**Agent can automate.**
+
+1. Set `WHISPER_MODEL=small` in `.env` (or another model size)
+2. Set `OPENAI_API_KEY=sk-local` in `.env` (dummy value -- Whisper ignores auth)
+3. The `whisper` service is already defined in `docker-compose.yml` and builds from `./whisper`
+4. Configure audio transcription in `~/.openclaw/openclaw.json`:
 
 ```json
 {
-  "plugins": {
-    "entries": {
-      "deepgram": {
-        "enabled": true
-      }
-    }
-  },
   "tools": {
     "media": {
       "audio": {
         "enabled": true,
         "models": [
-          { "provider": "deepgram", "model": "nova-3" }
-        ],
-        "providerOptions": {
-          "deepgram": {
-            "detect_language": true,
-            "punctuate": true,
-            "smart_format": true
+          {
+            "provider": "openai",
+            "model": "small",
+            "baseUrl": "http://whisper:8000/v1"
           }
-        }
+        ]
       }
     }
   }
 }
 ```
 
-5. Rebuild the custom image (`docker build -t openclaw:custom -f Dockerfile.custom .`)
-6. Recreate the container (`docker compose down && docker compose up -d openclaw-gateway`)
+5. Build and start: `docker compose up -d`
 
-**Important:** The Deepgram plugin must be explicitly enabled via `plugins.entries.deepgram.enabled: true`. The audio config alone is not enough.
+The gateway waits for the Whisper container to be healthy before starting. The first transcription request takes longer (~30s) as the model loads into memory.
 
-**Note:** `detect_language: true` enables automatic French/English (and other languages) detection.
+### 12c. Verify
+
+```bash
+# Check Whisper is healthy
+curl -s http://localhost:8000/health
+
+# Check Whisper is reachable from the gateway
+docker compose exec openclaw-gateway sh -c 'curl -sf http://whisper:8000/health'
+```
+
+Send a voice message on Telegram -- you should see `POST /v1/audio/transcriptions 200 OK` in `docker compose logs whisper`.
+
+### 12d. Reverting to Deepgram (cloud transcription)
+
+If you prefer cloud-based transcription, you can revert to Deepgram:
+
+1. Comment out `WHISPER_MODEL` and `OPENAI_API_KEY` in `.env`
+2. Uncomment `DEEPGRAM_API_KEY=<key>` in `.env`
+3. Update `~/.openclaw/openclaw.json` to use the Deepgram provider:
+
+```json
+{
+  "plugins": { "entries": { "deepgram": { "enabled": true } } },
+  "tools": {
+    "media": {
+      "audio": {
+        "enabled": true,
+        "models": [{ "provider": "deepgram", "model": "nova-3" }]
+      }
+    }
+  }
+}
+```
+
+4. Restart: `docker compose up -d openclaw-gateway`
 
 ## Day-to-day commands
 
