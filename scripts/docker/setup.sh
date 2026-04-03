@@ -269,6 +269,8 @@ mkdir -p "$OPENCLAW_WORKSPACE_DIR"
 mkdir -p "$OPENCLAW_CONFIG_DIR/identity"
 mkdir -p "$OPENCLAW_CONFIG_DIR/agents/main/agent"
 mkdir -p "$OPENCLAW_CONFIG_DIR/agents/main/sessions"
+mkdir -p "$OPENCLAW_CONFIG_DIR/agents/speckit/agent"
+mkdir -p "$OPENCLAW_CONFIG_DIR/agents/speckit/sessions"
 
 export OPENCLAW_CONFIG_DIR
 export OPENCLAW_WORKSPACE_DIR
@@ -518,6 +520,39 @@ run_prestart_cli onboard --mode local --no-install-daemon
 echo ""
 echo "==> Docker gateway defaults"
 sync_gateway_config
+
+echo ""
+echo "==> Spec-kit agent setup"
+# Register a dedicated speckit agent with its own workspace for spec-driven
+# development. The workspace (AGENTS.md) is seeded by the container entrypoint.
+# Skip if the agent is already configured to avoid overwriting user changes.
+if ! run_prestart_cli config get agents.list.1.id >/dev/null 2>&1 || \
+   [ "$(run_prestart_cli config get agents.list.1.id 2>/dev/null)" != "speckit" ]; then
+  speckit_config_ok=true
+  if ! run_prestart_cli config set agents.list.1.id "speckit" >/dev/null 2>&1; then
+    echo "WARNING: Failed to set speckit agent id" >&2
+    speckit_config_ok=false
+  fi
+  if ! run_prestart_cli config set agents.list.1.name "Spec Architect" >/dev/null 2>&1; then
+    echo "WARNING: Failed to set speckit agent name" >&2
+    speckit_config_ok=false
+  fi
+  if ! run_prestart_cli config set agents.list.1.workspace \
+    "/home/node/.openclaw/workspace-speckit" >/dev/null 2>&1; then
+    echo "WARNING: Failed to set speckit agent workspace" >&2
+    speckit_config_ok=false
+  fi
+  if [[ "$speckit_config_ok" == true ]]; then
+    echo "Spec-kit agent registered: id=speckit, name=Spec Architect"
+    echo "Workspace: ~/.openclaw/workspace-speckit"
+    echo "Bind to a channel with:"
+    echo "  ${COMPOSE_HINT} run --rm openclaw-cli agents bind --agent speckit --bind <channel>"
+  else
+    echo "WARNING: Spec-kit agent config was partially applied. Check errors above." >&2
+  fi
+else
+  echo "Spec-kit agent already configured, skipping."
+fi
 
 echo ""
 echo "==> Provider setup (optional)"

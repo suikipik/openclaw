@@ -454,7 +454,7 @@ docker build -t openclaw:local -f Dockerfile --build-arg OPENCLAW_EXTENSIONS="ac
 docker build -t openclaw:custom -f Dockerfile.custom .
 ```
 
-The `Dockerfile.custom` already includes Claude Code CLI (`@anthropic-ai/claude-code`), Python 3, and `uv` (for spec-kit).
+The `Dockerfile.custom` already includes Claude Code CLI (`@anthropic-ai/claude-code`), Python 3, `uv`, and spec-kit (`specify-cli`).
 
 ### 13b. Configure ACP in `openclaw.json`
 
@@ -542,6 +542,72 @@ Or use natural language: "lance Claude Code dans cette conversation".
 | `chmod 600` | Credentials file readable only by the container user |
 | Docker isolation | Container has no access to host filesystem beyond mounted volumes |
 
+## Step 14: Enable spec-kit agent (spec-driven development) (optional)
+
+**Agent can automate.** Spec-kit (github/spec-kit) provides a structured workflow for spec-driven development: write specifications, create plans, generate tasks, then implement -- all through Claude Code slash commands.
+
+The `Dockerfile.custom` already installs `uv`, `specify-cli`, and pre-scaffolds the spec-kit skills. The custom entrypoint seeds them into `~/.claude/skills/` on container startup so `/speckit-*` commands are globally available.
+
+### 14a. Verify spec-kit skills are available
+
+**Agent can automate.**
+
+```bash
+docker compose exec openclaw-gateway ls /opt/speckit-skills/
+```
+
+Expected output: `speckit-analyze`, `speckit-checklist`, `speckit-clarify`, `speckit-constitution`, `speckit-implement`, `speckit-plan`, `speckit-specify`, `speckit-tasks`, `speckit-taskstoissues`.
+
+After a container restart, these are copied to `/home/node/.claude/skills/` (the `claude-credentials` volume).
+
+### 14b. Register the Spec Architect agent
+
+**Agent can automate.** The `setup.sh` script registers this automatically, but you can also configure it manually:
+
+```bash
+docker compose run --rm -T openclaw-cli config set agents.list.1.id "speckit"
+docker compose run --rm -T openclaw-cli config set agents.list.1.name "Spec Architect"
+docker compose run --rm -T openclaw-cli config set agents.list.1.workspace "/home/node/.openclaw/workspace-speckit"
+```
+
+This creates a dedicated agent with its own workspace at `~/.openclaw/workspace-speckit/`. The workspace includes an `AGENTS.md` that instructs the agent to follow the spec-kit workflow.
+
+### 14c. Bind the agent to a channel
+
+**Agent can automate.**
+
+```bash
+# Bind to Telegram (all messages on this channel go to the speckit agent)
+docker compose run --rm -T openclaw-cli agents bind --agent speckit --bind telegram
+
+# Or bind to a specific Telegram peer (keep main agent as default)
+docker compose run --rm -T openclaw-cli agents bind --agent speckit --bind telegram --peer <chat-id>
+```
+
+### 14d. Available slash commands
+
+| Command | Purpose |
+|---------|---------|
+| `/speckit-constitution` | Establish project principles and guidelines |
+| `/speckit-specify` | Write a specification (requirements, user stories) |
+| `/speckit-clarify` | Ask structured questions to de-risk ambiguity |
+| `/speckit-plan` | Create a detailed implementation plan |
+| `/speckit-checklist` | Generate quality checklists |
+| `/speckit-tasks` | Break the plan into actionable tasks |
+| `/speckit-analyze` | Cross-artifact consistency report |
+| `/speckit-implement` | Execute all defined tasks |
+| `/speckit-taskstoissues` | Convert tasks into GitHub Issues |
+
+### 14e. Recommended workflow
+
+1. `/speckit-constitution` -- define project principles (once per project)
+2. `/speckit-specify` -- write requirements for a feature
+3. `/speckit-plan` -- create the technical plan
+4. `/speckit-tasks` -- generate actionable task items
+5. `/speckit-implement` -- build it
+
+Each step produces artifacts in `specs/` that the next step references.
+
 ## Day-to-day commands
 
 ```bash
@@ -622,3 +688,5 @@ This is expected. OpenClaw auto-detects `GH_TOKEN` as a GitHub Copilot credentia
 | `~/.openclaw/openclaw.json` | **Yes** (gateway token) | **No** (outside repo) | Gateway and agent config |
 | `~/.openclaw/agents/main/agent/auth-profiles.json` | **Yes** (Claude token) | **No** (outside repo) | Claude auth token |
 | `claude-credentials` Docker volume | **Yes** (Claude Code API key) | **No** (Docker volume) | Claude Code credentials for ACP |
+| `scripts/docker/entrypoint-custom.sh` | No | Yes | Seeds spec-kit skills and agent workspace on startup |
+| `scripts/docker/speckit-workspace/AGENTS.md` | No | Yes | Spec Architect agent instructions template |
