@@ -441,6 +441,107 @@ If you prefer cloud-based transcription, you can revert to Deepgram:
 
 4. Restart: `docker compose up -d openclaw-gateway`
 
+## Step 13: Enable ACP agents (Claude Code, Codex) (optional)
+
+**Agent can automate.** ACP (Agent Client Protocol) lets OpenClaw spawn external coding agents like Claude Code or Codex in the workspace.
+
+### 13a. Build the image with ACPX plugin
+
+**Agent can automate.**
+
+```bash
+docker build -t openclaw:local -f Dockerfile --build-arg OPENCLAW_EXTENSIONS="acpx" .
+docker build -t openclaw:custom -f Dockerfile.custom .
+```
+
+The `Dockerfile.custom` already includes Claude Code CLI (`@anthropic-ai/claude-code`), Python 3, and `uv` (for spec-kit).
+
+### 13b. Configure ACP in `openclaw.json`
+
+**Agent can automate.** Add these sections to `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "acp": {
+    "enabled": true,
+    "backend": "acpx",
+    "defaultAgent": "claude",
+    "allowedAgents": ["claude", "codex"]
+  },
+  "plugins": {
+    "entries": {
+      "acpx": {
+        "enabled": true,
+        "config": {
+          "permissionMode": "approve-all",
+          "cwd": "/home/node/.openclaw/workspace"
+        }
+      }
+    }
+  }
+}
+```
+
+- `permissionMode: "approve-all"` is required because Docker has no TTY for interactive prompts
+- `cwd` points to the mounted workspace volume
+
+### 13c. Configure Claude Code credentials
+
+**Requires human input** for the Anthropic API key.
+
+Claude Code credentials are stored in a dedicated Docker volume (`claude-credentials`), isolated from the OpenClaw config volume. The `stripProviderAuthEnvVars` security feature ensures OpenClaw does not pass API keys through environment variables -- Claude Code reads its own credentials independently.
+
+Write credentials to the container:
+
+```bash
+docker compose exec openclaw-gateway sh -c 'cat > /home/node/.claude/.credentials.json << EOF
+{
+  "claudeAiOauth": {
+    "accessToken": "<ANTHROPIC_API_KEY>",
+    "expiresAt": "2027-01-01T00:00:00.000Z",
+    "refreshToken": null,
+    "scopes": ["user:inference"]
+  }
+}
+EOF
+chmod 600 /home/node/.claude/.credentials.json'
+```
+
+If the volume has root ownership, fix it first:
+
+```bash
+docker compose exec -u root openclaw-gateway chown -R node:node /home/node/.claude
+```
+
+### 13d. Verify
+
+```bash
+# Check acpx plugin is loaded
+docker compose exec openclaw-gateway openclaw plugins list | grep acpx
+
+# Check Claude Code can authenticate
+docker compose exec openclaw-gateway claude --print "hello, reply with just ok"
+```
+
+### 13e. Usage
+
+From Telegram or the Control UI:
+
+- `/acp spawn claude --bind here` — bind a Claude Code session to the current conversation
+- `/acp status` — check active ACP sessions
+- `/acp close` — close the current session
+
+Or use natural language: "lance Claude Code dans cette conversation".
+
+### Security model
+
+| Layer | Protection |
+|-------|-----------|
+| `stripProviderAuthEnvVars=true` | OpenClaw does not pass API keys to spawned processes via env |
+| `claude-credentials` volume | Credentials isolated from OpenClaw config volume |
+| `chmod 600` | Credentials file readable only by the container user |
+| Docker isolation | Container has no access to host filesystem beyond mounted volumes |
+
 ## Day-to-day commands
 
 ```bash
@@ -520,3 +621,4 @@ This is expected. OpenClaw auto-detects `GH_TOKEN` as a GitHub Copilot credentia
 | `.env` | **Yes** | **No** (gitignored) | Runtime secrets and config |
 | `~/.openclaw/openclaw.json` | **Yes** (gateway token) | **No** (outside repo) | Gateway and agent config |
 | `~/.openclaw/agents/main/agent/auth-profiles.json` | **Yes** (Claude token) | **No** (outside repo) | Claude auth token |
+| `claude-credentials` Docker volume | **Yes** (Claude Code API key) | **No** (Docker volume) | Claude Code credentials for ACP |
