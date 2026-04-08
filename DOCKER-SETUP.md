@@ -1,26 +1,88 @@
 # OpenClaw Docker Setup Guide
 
-Personal Docker setup for running OpenClaw in an isolated container with GitHub CLI and Claude Pro plan authentication.
+Personal Docker setup for running OpenClaw in an isolated container. Supports two provider modes: local Ollama (free) or Anthropic Claude (paid).
 
 This guide is designed to be followed by an AI agent assisting a human. Each step clearly marks what the agent can automate vs what requires human input.
+
+## Provider choice
+
+**Agent must ask the human before starting:**
+
+> Which model provider would you like to use?
+>
+> **A) Local Ollama (free, private)** -- Runs LLM inference on your Mac via Ollama. Requires Apple Silicon and enough RAM (24 GB+ recommended). Models: Llama 3.1 8B (main) + Qwen 2.5 Coder 7B (coding subagent). Zero API cost.
+>
+> **B) Anthropic Claude (paid, cloud)** -- Uses Claude via API key or setup token. Requires an Anthropic API key or Claude Pro/Max subscription. Better quality but costs money per request.
+
+- If the human chooses **A (Ollama)**: follow this guide as written.
+- If the human chooses **B (Anthropic)**: skip Step 2 (Ollama install), and in Step 6 replace the `models.providers.ollama` block with an `auth.profiles` block pointing to Anthropic. Set `agents.defaults.model.primary` to `anthropic/claude-sonnet-4-6`. The human will need to run `claude setup-token` and write the output to `~/.openclaw/agents/main/agent/auth-profiles.json`. Docker Desktop can keep the default 8 GB RAM since Ollama is not needed.
 
 ## Prerequisites
 
 - Docker Desktop (or Docker Engine) + Docker Compose v2
-- At least 2 GB RAM for image build
-- A Claude Pro/Max subscription
+- If using Ollama: Docker Desktop configured with **4 GB RAM** (not the default 8 GB -- Ollama needs the remaining host memory)
+- If using Ollama: macOS with Apple Silicon (for Metal GPU acceleration)
 - A GitHub account with `gh` CLI authenticated on the host
+
+## Architecture overview
+
+### [Ollama mode]
+
+```
+┌──────────────────────────────────┐
+│         macOS Host               │
+│                                  │
+│  Ollama (brew service)           │
+│  ├─ llama3.1:8b    (main agent)  │
+│  └─ qwen2.5-coder:7b (subagent) │
+│  Bound to 127.0.0.1:11434       │
+│                                  │
+│  ┌────────────────────────────┐  │
+│  │     Docker (4 GB VM)       │  │
+│  │                            │  │
+│  │  openclaw-gateway          │  │
+│  │  ├─ port 18789 (gateway)   │  │
+│  │  └─ port 18790 (bridge)    │  │
+│  │                            │  │
+│  │  whisper (transcription)   │  │
+│  │  └─ port 8000              │  │
+│  │                            │  │
+│  │  → host.docker.internal    │  │
+│  │    reaches Ollama on host  │  │
+│  └────────────────────────────┘  │
+└──────────────────────────────────┘
+```
+
+### [Anthropic mode]
+
+```
+┌──────────────────────────────────┐
+│         macOS Host               │
+│                                  │
+│  ┌────────────────────────────┐  │
+│  │     Docker (8 GB VM)       │  │
+│  │                            │  │
+│  │  openclaw-gateway          │  │
+│  │  ├─ port 18789 (gateway)   │  │
+│  │  └─ port 18790 (bridge)    │  │
+│  │  └─ → api.anthropic.com   │  │
+│  │                            │  │
+│  │  whisper (transcription)   │  │
+│  │  └─ port 8000              │  │
+│  └────────────────────────────┘  │
+└──────────────────────────────────┘
+```
 
 ## Secrets inventory
 
-| Secret | How to obtain | Written to |
-|--------|--------------|------------|
-| `OPENCLAW_GATEWAY_TOKEN` | Agent generates via `openssl rand -hex 32` | `.env`, `~/.openclaw/openclaw.json` |
-| `GH_TOKEN` | Human provides (https://github.com/settings/tokens) | `.env` |
-| `CLAUDE_OAUTH_TOKEN` | Human runs `claude setup-token` and provides output | `~/.openclaw/agents/main/agent/auth-profiles.json` |
-| `TELEGRAM_BOT_TOKEN` | Human creates bot via @BotFather on Telegram | `.env`, `docker-compose.yml`, `~/.openclaw/openclaw.json` |
-| `GIT_USER_NAME` | Human provides | `.env` (passed as `GIT_AUTHOR_NAME`/`GIT_COMMITTER_NAME`) |
-| `GIT_USER_EMAIL` | Human provides | `.env` (passed as `GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_EMAIL`) |
+| Secret                   | How to obtain                                       | Written to                                                  | Required for    |
+| ------------------------ | --------------------------------------------------- | ----------------------------------------------------------- | --------------- |
+| `OPENCLAW_GATEWAY_TOKEN` | Agent generates via `openssl rand -hex 32`          | `.env`, `~/.openclaw/openclaw.json`                         | Both            |
+| `GH_TOKEN`               | Human provides (https://github.com/settings/tokens) | `.env`                                                      | Both            |
+| `CLAUDE_OAUTH_TOKEN`     | Human runs `claude setup-token`                     | `~/.openclaw/agents/main/agent/auth-profiles.json`          | Anthropic only  |
+| `TELEGRAM_BOT_TOKEN`     | Human creates bot via @BotFather on Telegram        | `.env`, `~/.openclaw/openclaw.json`                         | Both (optional) |
+| `GIT_USER_NAME`          | Human provides                                      | `.env` (passed as `GIT_AUTHOR_NAME`/`GIT_COMMITTER_NAME`)   | Both            |
+| `GIT_USER_EMAIL`         | Human provides                                      | `.env` (passed as `GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_EMAIL`) | Both            |
 
 ## Step 1: Fork and clone the repo
 
@@ -40,7 +102,116 @@ git remote add origin https://github.com/<your-username>/openclaw.git
 
 This keeps `upstream` pointing to the original repo for pulling updates, and `origin` pointing to your fork for pushing customizations.
 
-## Step 2: Create the custom Dockerfile
+## Step 2: Install and configure Ollama on the host [Ollama only]
+
+**Skip this step if using Anthropic.**
+
+**Agent can automate.** Ollama runs natively on macOS (not in Docker) for Metal GPU acceleration.
+
+### 2a. Install Ollama
+
+```bash
+brew install ollama
+brew services start ollama
+```
+
+### 2b. Pull the models
+
+```bash
+ollama pull llama3.1:8b        # Main agent model (~5 GB)
+ollama pull qwen2.5-coder:7b   # Coding subagent model (~4.7 GB)
+ollama pull nomic-embed-text   # Embedding model for memory (~274 MB)
+```
+
+### 2c. Configure persistent keep-alive
+
+By default Ollama unloads models after 5 minutes of inactivity. Reloading takes 30-60 seconds and causes gateway timeouts. Set `OLLAMA_KEEP_ALIVE=-1` to keep models in memory permanently.
+
+Edit the launchd plist (**do not use `brew services restart`** afterward -- it overwrites the plist):
+
+```bash
+# Open the plist
+nano ~/Library/LaunchAgents/homebrew.mxcl.ollama.plist
+```
+
+Add this key inside the `<dict>` under `EnvironmentVariables`:
+
+```xml
+<key>OLLAMA_KEEP_ALIVE</key>
+<string>-1</string>
+```
+
+Reload the service (without overwriting the plist):
+
+```bash
+launchctl kickstart -k gui/$(id -u)/homebrew.mxcl.ollama
+```
+
+### 2d. Verify
+
+```bash
+# Check Ollama is listening on localhost only (security)
+lsof -iTCP:11434 -sTCP:LISTEN -P -n
+# Expected: 127.0.0.1:11434
+
+# Preload the model and test inference
+curl -s http://127.0.0.1:11434/api/chat \
+  -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"Say hi"}],"stream":false}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['message']['content'])"
+
+# Check model stays loaded
+curl -s http://127.0.0.1:11434/api/ps \
+  | python3 -c "import sys,json; [print(f\"{m['name']}: loaded\") for m in json.load(sys.stdin)['models']]"
+```
+
+**Security note:** Ollama binds to `127.0.0.1` (localhost only) by default. Do not change this -- the Docker containers reach it via `host.docker.internal` which maps to the host's loopback on Docker Desktop.
+
+### 2e. Important: restarting Ollama
+
+Never use `brew services restart ollama` -- it overwrites the plist and removes `OLLAMA_KEEP_ALIVE`. Instead use:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/homebrew.mxcl.ollama
+```
+
+## Step 2B: Configure Claude Pro authentication [Anthropic only]
+
+**Skip this step if using Ollama.**
+
+**Requires human input** for the Claude setup token.
+
+### 2B-a. Obtain the Claude setup token
+
+**Human must run this** on any machine where they are logged into Claude:
+
+```bash
+claude setup-token
+```
+
+**Agent instruction:** Ask the human to run `claude setup-token` and provide the output. Validate it starts with `sk-ant-oat01-` and is at least 80 characters long.
+
+### 2B-b. Write the auth profile
+
+**Agent can automate** once the token is provided. Write to `~/.openclaw/agents/main/agent/auth-profiles.json`:
+
+```bash
+mkdir -p ~/.openclaw/agents/main/agent
+```
+
+```json
+{
+  "version": 1,
+  "profiles": {
+    "anthropic:manual": {
+      "type": "token",
+      "provider": "anthropic",
+      "token": "<CLAUDE_OAUTH_TOKEN from Step 2B-a>"
+    }
+  }
+}
+```
+
+## Step 3: Create the custom Dockerfile
 
 **Agent can automate.** Write `Dockerfile.custom` to the repo root. This layers tools on top of the base OpenClaw image without modifying the upstream Dockerfile.
 
@@ -59,13 +230,18 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gh && \
     rm -rf /var/lib/apt/lists/*
 
+# ffmpeg for audio/video transcription
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg && \
+    rm -rf /var/lib/apt/lists/*
+
 # Add more tools below as needed, e.g.:
-# RUN apt-get update && apt-get install -y --no-install-recommends python3 ripgrep && rm -rf /var/lib/apt/lists/*
+# RUN apt-get update && apt-get install -y --no-install-recommends ripgrep && rm -rf /var/lib/apt/lists/*
 
 USER node
 ```
 
-## Step 3: Generate the gateway token
+## Step 4: Generate the gateway token
 
 **Agent can automate.** Generate a random 64-character hex token. This value is reused in `.env` and `openclaw.json`.
 
@@ -73,79 +249,68 @@ USER node
 openssl rand -hex 32
 ```
 
-Store the output -- it is needed in Steps 4 and 5.
+Store the output -- it is needed in Steps 5 and 6.
 
-## Step 4: Create the `.env` file
+## Step 5: Create the `.env` file
 
 **Requires human input** for `GH_TOKEN`. The agent writes the file, using the generated gateway token and a placeholder for `GH_TOKEN`.
 
 The `.env` file is gitignored and must never be committed.
 
-```bash
-cp .env.example .env
-```
-
-Required values:
+Required values (common to both modes):
 
 ```env
+# Docker image
 OPENCLAW_IMAGE=openclaw:custom
-OPENCLAW_GATEWAY_TOKEN=<generated in Step 3>
+
+# Gateway
+OPENCLAW_GATEWAY_TOKEN=<generated in Step 4>
 OPENCLAW_GATEWAY_BIND=lan
+
+# Docker paths (used by docker-compose.yml)
 OPENCLAW_CONFIG_DIR=~/.openclaw
 OPENCLAW_WORKSPACE_DIR=~/.openclaw/workspace
+
+# GitHub CLI
 GH_TOKEN=<ASK HUMAN: GitHub personal access token>
-GIT_USER_NAME=<ASK HUMAN: Git commit author name (e.g. GitHub username)>
+
+# Git identity
+GIT_USER_NAME=<ASK HUMAN: Git commit author name>
 GIT_USER_EMAIL=<ASK HUMAN: Git commit email>
+
+# Audio transcription (local Whisper via faster-whisper-server)
+WHISPER_MODEL=small
+OPENAI_API_KEY=sk-local
+
+# Channels
+TELEGRAM_BOT_TOKEN=<ASK HUMAN: Telegram bot token, optional>
+```
+
+**[Ollama only]** -- no additional env vars needed. Ollama runs on the host with no API key.
+
+**[Anthropic only]** -- add this line (the token is stored in auth-profiles.json, not here; this is for reference only):
+
+```env
+# Anthropic token stored in ~/.openclaw/agents/main/agent/auth-profiles.json (see Step 2B)
 ```
 
 **Agent instruction:** Do not use `cp .env.example` -- write the `.env` file directly with the values above. Ask the human to provide:
+
 - `GH_TOKEN`: GitHub personal access token. Validate it starts with `ghp_` (classic) or `github_pat_` (fine-grained).
 - `GIT_USER_NAME`: their GitHub username or preferred git author name.
 - `GIT_USER_EMAIL`: their git commit email.
 
 Also add the GitHub username and email to the `Owner Identity` section of `~/.openclaw/workspace/AGENTS.md` so OpenClaw knows the human's GitHub username for cloning personal repos.
 
-## Step 5: Configure Claude Pro authentication
+## Step 6: Write the gateway config
 
-**Requires human input** for the Claude setup token.
-
-### 5a. Create config directories
-
-**Agent can automate.**
+**Agent can automate.** Write to `~/.openclaw/openclaw.json`, reusing the gateway token from Step 4:
 
 ```bash
 mkdir -p ~/.openclaw/agents/main/agent ~/.openclaw/workspace
 ```
 
-### 5b. Obtain the Claude setup token
-
-**Human must run this** on any machine where they are logged into Claude:
-
-```bash
-claude setup-token
-```
-
-**Agent instruction:** Ask the human to run `claude setup-token` and provide the output. Validate it starts with `sk-ant-oat01-` and is at least 80 characters long.
-
-### 5c. Write the auth profile
-
-**Agent can automate** once the token is provided. Write to `~/.openclaw/agents/main/agent/auth-profiles.json`:
-
-```json
-{
-  "profiles": {
-    "anthropic:manual": {
-      "type": "token",
-      "provider": "anthropic",
-      "token": "<CLAUDE_OAUTH_TOKEN from Step 5b>"
-    }
-  }
-}
-```
-
-### 5d. Write the gateway config
-
-**Agent can automate.** Write to `~/.openclaw/openclaw.json`, reusing the gateway token from Step 3:
+### [Ollama mode] openclaw.json
 
 ```json
 {
@@ -153,7 +318,93 @@ claude setup-token
     "mode": "local",
     "bind": "lan",
     "auth": {
-      "token": "<OPENCLAW_GATEWAY_TOKEN from Step 3>"
+      "token": "<OPENCLAW_GATEWAY_TOKEN from Step 4>"
+    },
+    "controlUi": {
+      "allowedOrigins": ["http://localhost:18789", "http://127.0.0.1:18789"]
+    }
+  },
+  "models": {
+    "providers": {
+      "ollama": {
+        "baseUrl": "http://host.docker.internal:11434",
+        "api": "ollama",
+        "apiKey": "ollama-local",
+        "models": [
+          {
+            "id": "llama3.1:8b",
+            "name": "Llama 3.1 8B",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 128000,
+            "maxTokens": 8192
+          },
+          {
+            "id": "qwen2.5-coder:7b",
+            "name": "Qwen 2.5 Coder 7B",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 32768,
+            "maxTokens": 8192
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "ollama/llama3.1:8b"
+      },
+      "subagents": {
+        "model": "ollama/qwen2.5-coder:7b"
+      },
+      "timeoutSeconds": 900,
+      "memorySearch": {
+        "enabled": true,
+        "provider": "ollama",
+        "model": "nomic-embed-text",
+        "remote": {
+          "baseUrl": "http://host.docker.internal:11434"
+        }
+      }
+    }
+  },
+  "tools": {
+    "exec": {
+      "security": "full"
+    },
+    "media": {
+      "audio": {
+        "enabled": true,
+        "models": [
+          {
+            "provider": "openai",
+            "model": "small",
+            "baseUrl": "http://whisper:8000/v1"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+- `models.providers.ollama.baseUrl` uses `host.docker.internal` to reach the host's Ollama service from inside Docker.
+- `agents.defaults.subagents.model` routes coding tasks spawned via `sessions_spawn` to Qwen 2.5 Coder.
+- `agents.defaults.memorySearch` uses `nomic-embed-text` via Ollama for vector memory search (conversation recall, session context). Without this, memory falls back to OpenAI embeddings which requires a paid API key.
+
+### [Anthropic mode] openclaw.json
+
+```json
+{
+  "gateway": {
+    "mode": "local",
+    "bind": "lan",
+    "auth": {
+      "token": "<OPENCLAW_GATEWAY_TOKEN from Step 4>"
     },
     "controlUi": {
       "allowedOrigins": ["http://localhost:18789", "http://127.0.0.1:18789"]
@@ -172,33 +423,49 @@ claude setup-token
       "model": {
         "primary": "anthropic/claude-sonnet-4-6"
       },
+      "timeoutSeconds": 300
     }
   },
   "tools": {
     "exec": {
       "security": "full"
+    },
+    "media": {
+      "audio": {
+        "enabled": true,
+        "models": [
+          {
+            "provider": "openai",
+            "model": "small",
+            "baseUrl": "http://whisper:8000/v1"
+          }
+        ]
+      }
     }
   }
 }
 ```
 
-`tools.exec.security: "full"` auto-approves all command execution without prompting. This is safe because the Docker container is isolated -- it can only access the workspace and config volumes, not the host filesystem. Access is further locked by `dmPolicy: "allowlist"` on Telegram.
+- `auth.profiles` references the token written in Step 2B-b.
 
-## Step 6: Update `docker-compose.yml`
+### Common notes (both modes)
 
-**Agent can automate.** Add the following to both `openclaw-gateway` and `openclaw-cli` services in `docker-compose.yml`:
+- `tools.exec.security: "full"` auto-approves all command execution without prompting. This is safe because the Docker container is isolated -- it can only access the workspace and config volumes, not the host filesystem.
 
-- In the `environment` block: `GH_TOKEN: ${GH_TOKEN:-}` and `TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}`
-The container only has access to `~/.openclaw` (config) and `~/.openclaw/workspace` (coding projects). The rest of the host filesystem is inaccessible. Use the workspace folder to clone repos and work on projects.
+## Step 7: Ensure `docker-compose.yml` has host access [Ollama only]
 
-### Volume access summary
+**Skip this step if using Anthropic.** The gateway does not need host access when using cloud APIs.
 
-| Container path | Host path | Purpose |
-|---|---|---|
-| `/home/node/.openclaw` | `~/.openclaw` | Config, auth, sessions |
-| `/home/node/.openclaw/workspace` | `~/.openclaw/workspace` | Coding projects |
+**Agent can automate.** Both `openclaw-gateway` and `openclaw-cli` services need `extra_hosts` to resolve `host.docker.internal`:
 
-## Step 7: Build and start
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
+
+Add this to both services. Docker Desktop on macOS usually provides this by default, but explicit is safer.
+
+## Step 8: Build and start
 
 **Agent can automate.**
 
@@ -209,17 +476,17 @@ docker build -t openclaw:local -f Dockerfile .
 # Layer custom tools on top
 docker build -t openclaw:custom -f Dockerfile.custom .
 
-# Start the gateway
-OPENCLAW_IMAGE=openclaw:custom docker compose up -d openclaw-gateway
+# Start the gateway (pulls Whisper image on first run)
+docker compose up -d openclaw-gateway
 ```
 
-## Step 8: Verify
+## Step 9: Verify
 
-**Agent can automate.** Wait 8-10 seconds after `docker compose up` for the gateway to initialize, then run these checks:
+**Agent can automate.** Wait 15-20 seconds after `docker compose up` for the gateway to initialize and Whisper to become healthy.
 
 ```bash
 # Wait for gateway to initialize
-sleep 10
+sleep 20
 
 # Liveness probe (expect {"ok":true,"status":"live"})
 curl -fsS http://127.0.0.1:18789/healthz
@@ -227,20 +494,38 @@ curl -fsS http://127.0.0.1:18789/healthz
 # Readiness probe (expect {"ready":true})
 curl -fsS http://127.0.0.1:18789/readyz
 
-# Model auth status
-OPENCLAW_IMAGE=openclaw:custom docker compose run --rm -T openclaw-cli models status
+# Check gateway logs for model confirmation
+docker logs openclaw-openclaw-gateway-1 2>&1 | grep "agent model"
+# Expected [Ollama]: agent model: ollama/llama3.1:8b
+# Expected [Anthropic]: agent model: anthropic/claude-sonnet-4-6
+
+# Model auth status [Anthropic only]
+docker compose run --rm -T openclaw-cli models status
+# Expected: anthropic should show profiles=1 (... token=1 ...)
+
+# Test inference from container [Ollama only]
+docker exec openclaw-openclaw-gateway-1 node -e "
+fetch('http://host.docker.internal:11434/api/chat', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({model:'llama3.1:8b', messages:[{role:'user',content:'Say hi'}], stream:false})
+}).then(r => r.json()).then(d => console.log(d.message.content)).catch(e => console.error('FAILED:', e.message));
+"
 ```
 
-**Agent instruction:** If the health check returns a connection error, wait another 10 seconds and retry (up to 3 attempts). Check `models status` output for:
-- `anthropic` should show `profiles=1 (... token=1 ...)` -- if it shows "Missing auth", the auth-profiles.json path is wrong (see Troubleshooting).
-- `github-copilot` should show `env=ghp_...` -- if missing, `GH_TOKEN` is not set in `.env`.
-If errors appear, check logs with `docker compose logs openclaw-gateway | tail -40`.
+**Agent instruction [Ollama]:** If the inference test fails, check:
 
-## Step 9: Open the Control UI and approve the browser device
+1. Ollama is running on the host: `brew services info ollama`
+2. Model is loaded: `curl -s http://127.0.0.1:11434/api/ps`
+3. If model is not loaded, preload it: `curl -s http://127.0.0.1:11434/api/chat -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"hi"}],"stream":false,"keep_alive":-1}'`
+
+**Agent instruction [Anthropic]:** If `models status` shows "Missing auth - anthropic", the auth-profiles.json path is wrong. Ensure it is at `~/.openclaw/agents/main/agent/auth-profiles.json` (not `~/.openclaw/agents/default/`).
+
+## Step 10: Open the Control UI and approve the browser device
 
 **Agent can partially automate.** The browser must be paired before the human can use the Control UI.
 
-### 9a. Get the dashboard URL with embedded token
+### 10a. Get the dashboard URL with embedded token
 
 ```bash
 docker compose run --rm -T openclaw-cli dashboard --no-open
@@ -248,7 +533,7 @@ docker compose run --rm -T openclaw-cli dashboard --no-open
 
 This outputs a URL like `http://127.0.0.1:18789/#token=<GATEWAY_TOKEN>`. Give this URL to the human to open in their browser.
 
-### 9b. Approve the browser pairing request
+### 10b. Approve the browser pairing request
 
 After the human opens the URL, a pairing request is created. The agent must approve it:
 
@@ -262,24 +547,20 @@ docker compose run --rm -T openclaw-cli devices approve <request-id>
 
 **Agent instruction:** First, ask the human to confirm they have opened the dashboard URL in their browser. Then run `devices list`, find the row in the "Pending" table, extract the `Request` UUID, and run `devices approve <uuid>`. If no pending requests appear, ask the human to refresh the browser page and retry after a few seconds. Once approved, tell the human to refresh the page -- they should now have full access.
 
-## Step 10: Use the CLI
+## Step 11: Use the CLI
 
 ```bash
-OPENCLAW_IMAGE=openclaw:custom docker compose run --rm openclaw-cli channels status
-OPENCLAW_IMAGE=openclaw:custom docker compose run --rm openclaw-cli models status
+docker compose run --rm -T openclaw-cli channels status
+docker compose run --rm -T openclaw-cli models status
 ```
 
-**Tip:** To avoid repeating `OPENCLAW_IMAGE=openclaw:custom`, add it to your `.env` file:
+**Tip:** `OPENCLAW_IMAGE=openclaw:custom` is already in `.env`, so `docker compose` picks it up automatically.
 
-```env
-OPENCLAW_IMAGE=openclaw:custom
-```
-
-## Step 11: Add Telegram channel (optional)
+## Step 12: Add Telegram channel (optional)
 
 **Requires human input** for the bot token.
 
-### 11a. Create a Telegram bot
+### 12a. Create a Telegram bot
 
 **Human must do this** in Telegram:
 
@@ -291,20 +572,19 @@ OPENCLAW_IMAGE=openclaw:custom
 
 **Agent instruction:** Ask the human to create a bot via @BotFather and provide the token. Validate it matches the pattern `<digits>:<alphanumeric string>`.
 
-### 11b. Configure Telegram
+### 12b. Configure Telegram
 
 **Agent can automate** once the token is provided.
 
 1. Add `TELEGRAM_BOT_TOKEN=<token>` to `.env`
-2. Add `TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}` to the `environment` block of both services in `docker-compose.yml`
-3. Restart the gateway: `docker compose down && docker compose up -d openclaw-gateway`
-4. Wait 10 seconds, then register the channel:
+2. Restart the gateway: `docker compose up -d openclaw-gateway --force-recreate`
+3. Wait 15 seconds, then register the channel:
 
 ```bash
 docker compose run --rm -T openclaw-cli channels add --channel telegram --token "<token>"
 ```
 
-5. Verify:
+4. Verify:
 
 ```bash
 docker compose run --rm -T openclaw-cli channels status
@@ -312,7 +592,7 @@ docker compose run --rm -T openclaw-cli channels status
 
 Expected output should show: `Telegram default: enabled, configured, running, mode:polling`
 
-### 11c. Enable exec approvals and lock access
+### 12c. Enable exec approvals and lock access
 
 **Agent can automate** once the human's Telegram user ID is known (provided in the pairing message).
 
@@ -339,9 +619,9 @@ Add these fields to `channels.telegram` in `~/.openclaw/openclaw.json`:
 - `execApprovals.enabled: true` lets the human approve/deny command execution directly in Telegram DMs
 - `target: "dm"` sends approval prompts to the human's DM (not a group)
 
-**Agent instruction:** The human's Telegram user ID appears in the bot's first "access not configured" reply. Extract it from there or ask the human. Restart the gateway after updating the config.
+**Agent instruction:** The human's Telegram user ID appears in the bot's first "access not configured" reply. Extract it from there or ask the human. Recreate the gateway after updating the config: `docker compose up -d openclaw-gateway --force-recreate`.
 
-### 11d. Approve the Telegram user
+### 12d. Approve the Telegram user
 
 The first time a user messages the bot, OpenClaw replies with a pairing code. The agent must approve it:
 
@@ -353,59 +633,33 @@ docker compose run --rm -T openclaw-cli pairing approve telegram <PAIRING_CODE>
 
 The human can now message the bot on Telegram and OpenClaw will respond.
 
-## Step 12: Enable voice message transcription (optional)
+## Step 13: Enable voice message transcription (optional)
 
 **Agent can automate.** No external API key needed -- transcription runs locally via a self-hosted Whisper container.
 
-### 12a. Whisper Docker image
+### 13a. Whisper Docker image
 
 The `whisper/` directory contains a custom Docker image that runs [faster-whisper](https://github.com/SYSTRAN/faster-whisper) behind a minimal FastAPI server exposing an OpenAI-compatible `/v1/audio/transcriptions` endpoint.
 
 Available models (set via `WHISPER_MODEL` in `.env`):
 
-| Model | Size | RAM | Speed (30s audio) | Quality |
-|-------|------|-----|-------------------|---------|
-| `tiny` | 75 MB | ~150 MB | ~2s | Basic |
-| `base` | 140 MB | ~300 MB | ~3s | Decent |
-| **`small`** | 460 MB | ~1 GB | **~5s** | **Good (recommended)** |
-| `medium` | 1.5 GB | ~3 GB | ~12s | Very good |
-| `large-v3` | 3 GB | ~6 GB | ~25s | Excellent |
+| Model       | Size   | RAM     | Speed (30s audio) | Quality                |
+| ----------- | ------ | ------- | ----------------- | ---------------------- |
+| `tiny`      | 75 MB  | ~150 MB | ~2s               | Basic                  |
+| `base`      | 140 MB | ~300 MB | ~3s               | Decent                 |
+| **`small`** | 460 MB | ~1 GB   | **~5s**           | **Good (recommended)** |
+| `medium`    | 1.5 GB | ~3 GB   | ~12s              | Very good              |
+| `large-v3`  | 3 GB   | ~6 GB   | ~25s              | Excellent              |
 
 The model is downloaded automatically on first transcription request.
 
-### 12b. Configure Whisper
+### 13b. Configure Whisper
 
-**Agent can automate.**
+**Agent can automate.** If you followed Step 5, the `.env` already contains `WHISPER_MODEL=small` and `OPENAI_API_KEY=sk-local`. The audio transcription config is already in `openclaw.json` from Step 6.
 
-1. Set `WHISPER_MODEL=small` in `.env` (or another model size)
-2. Set `OPENAI_API_KEY=sk-local` in `.env` (dummy value -- Whisper ignores auth)
-3. The `whisper` service is already defined in `docker-compose.yml` and builds from `./whisper`
-4. Configure audio transcription in `~/.openclaw/openclaw.json`:
+The `whisper` service is defined in `docker-compose.yml` and the gateway waits for it to be healthy before starting.
 
-```json
-{
-  "tools": {
-    "media": {
-      "audio": {
-        "enabled": true,
-        "models": [
-          {
-            "provider": "openai",
-            "model": "small",
-            "baseUrl": "http://whisper:8000/v1"
-          }
-        ]
-      }
-    }
-  }
-}
-```
-
-5. Build and start: `docker compose up -d`
-
-The gateway waits for the Whisper container to be healthy before starting. The first transcription request takes longer (~30s) as the model loads into memory.
-
-### 12c. Verify
+### 13c. Verify
 
 ```bash
 # Check Whisper is healthy
@@ -417,202 +671,11 @@ docker compose exec openclaw-gateway sh -c 'curl -sf http://whisper:8000/health'
 
 Send a voice message on Telegram -- you should see `POST /v1/audio/transcriptions 200 OK` in `docker compose logs whisper`.
 
-### 12d. Reverting to Deepgram (cloud transcription)
-
-If you prefer cloud-based transcription, you can revert to Deepgram:
-
-1. Comment out `WHISPER_MODEL` and `OPENAI_API_KEY` in `.env`
-2. Uncomment `DEEPGRAM_API_KEY=<key>` in `.env`
-3. Update `~/.openclaw/openclaw.json` to use the Deepgram provider:
-
-```json
-{
-  "plugins": { "entries": { "deepgram": { "enabled": true } } },
-  "tools": {
-    "media": {
-      "audio": {
-        "enabled": true,
-        "models": [{ "provider": "deepgram", "model": "nova-3" }]
-      }
-    }
-  }
-}
-```
-
-4. Restart: `docker compose up -d openclaw-gateway`
-
-## Step 13: Enable ACP agents (Claude Code, Codex) (optional)
-
-**Agent can automate.** ACP (Agent Client Protocol) lets OpenClaw spawn external coding agents like Claude Code or Codex in the workspace.
-
-### 13a. Build the image with ACPX plugin
-
-**Agent can automate.**
-
-```bash
-docker build -t openclaw:local -f Dockerfile --build-arg OPENCLAW_EXTENSIONS="acpx" .
-docker build -t openclaw:custom -f Dockerfile.custom .
-```
-
-The `Dockerfile.custom` already includes Claude Code CLI (`@anthropic-ai/claude-code`), Python 3, `uv`, and spec-kit (`specify-cli`).
-
-### 13b. Configure ACP in `openclaw.json`
-
-**Agent can automate.** Add these sections to `~/.openclaw/openclaw.json`:
-
-```json
-{
-  "acp": {
-    "enabled": true,
-    "backend": "acpx",
-    "defaultAgent": "claude",
-    "allowedAgents": ["claude", "codex"]
-  },
-  "plugins": {
-    "entries": {
-      "acpx": {
-        "enabled": true,
-        "config": {
-          "permissionMode": "approve-all",
-          "cwd": "/home/node/.openclaw/workspace"
-        }
-      }
-    }
-  }
-}
-```
-
-- `permissionMode: "approve-all"` is required because Docker has no TTY for interactive prompts
-- `cwd` points to the mounted workspace volume
-
-### 13c. Configure Claude Code credentials
-
-**Requires human input** for the Anthropic API key.
-
-Claude Code credentials are stored in a dedicated Docker volume (`claude-credentials`), isolated from the OpenClaw config volume. The `stripProviderAuthEnvVars` security feature ensures OpenClaw does not pass API keys through environment variables -- Claude Code reads its own credentials independently.
-
-Write credentials to the container:
-
-```bash
-docker compose exec openclaw-gateway sh -c 'cat > /home/node/.claude/.credentials.json << EOF
-{
-  "claudeAiOauth": {
-    "accessToken": "<ANTHROPIC_API_KEY>",
-    "expiresAt": "2027-01-01T00:00:00.000Z",
-    "refreshToken": null,
-    "scopes": ["user:inference"]
-  }
-}
-EOF
-chmod 600 /home/node/.claude/.credentials.json'
-```
-
-If the volume has root ownership, fix it first:
-
-```bash
-docker compose exec -u root openclaw-gateway chown -R node:node /home/node/.claude
-```
-
-### 13d. Verify
-
-```bash
-# Check acpx plugin is loaded
-docker compose exec openclaw-gateway openclaw plugins list | grep acpx
-
-# Check Claude Code can authenticate
-docker compose exec openclaw-gateway claude --print "hello, reply with just ok"
-```
-
-### 13e. Usage
-
-From Telegram or the Control UI:
-
-- `/acp spawn claude --bind here` — bind a Claude Code session to the current conversation
-- `/acp status` — check active ACP sessions
-- `/acp close` — close the current session
-
-Or use natural language: "lance Claude Code dans cette conversation".
-
-### Security model
-
-| Layer | Protection |
-|-------|-----------|
-| `stripProviderAuthEnvVars=true` | OpenClaw does not pass API keys to spawned processes via env |
-| `claude-credentials` volume | Credentials isolated from OpenClaw config volume |
-| `chmod 600` | Credentials file readable only by the container user |
-| Docker isolation | Container has no access to host filesystem beyond mounted volumes |
-
-## Step 14: Enable spec-kit agent (spec-driven development) (optional)
-
-**Agent can automate.** Spec-kit (github/spec-kit) provides a structured workflow for spec-driven development: write specifications, create plans, generate tasks, then implement -- all through Claude Code slash commands.
-
-The `Dockerfile.custom` already installs `uv`, `specify-cli`, and pre-scaffolds the spec-kit skills. The custom entrypoint seeds them into `~/.claude/skills/` on container startup so `/speckit-*` commands are globally available.
-
-### 14a. Verify spec-kit skills are available
-
-**Agent can automate.**
-
-```bash
-docker compose exec openclaw-gateway ls /opt/speckit-skills/
-```
-
-Expected output: `speckit-analyze`, `speckit-checklist`, `speckit-clarify`, `speckit-constitution`, `speckit-implement`, `speckit-plan`, `speckit-specify`, `speckit-tasks`, `speckit-taskstoissues`.
-
-After a container restart, these are copied to `/home/node/.claude/skills/` (the `claude-credentials` volume).
-
-### 14b. Register the Spec Architect agent
-
-**Agent can automate.** The `setup.sh` script registers this automatically, but you can also configure it manually:
-
-```bash
-docker compose run --rm -T openclaw-cli config set agents.list.1.id "speckit"
-docker compose run --rm -T openclaw-cli config set agents.list.1.name "Spec Architect"
-docker compose run --rm -T openclaw-cli config set agents.list.1.workspace "/home/node/.openclaw/workspace-speckit"
-```
-
-This creates a dedicated agent with its own workspace at `~/.openclaw/workspace-speckit/`. The workspace includes an `AGENTS.md` that instructs the agent to follow the spec-kit workflow.
-
-### 14c. Bind the agent to a channel
-
-**Agent can automate.**
-
-```bash
-# Bind to Telegram (all messages on this channel go to the speckit agent)
-docker compose run --rm -T openclaw-cli agents bind --agent speckit --bind telegram
-
-# Or bind to a specific Telegram peer (keep main agent as default)
-docker compose run --rm -T openclaw-cli agents bind --agent speckit --bind telegram --peer <chat-id>
-```
-
-### 14d. Available slash commands
-
-| Command | Purpose |
-|---------|---------|
-| `/speckit-constitution` | Establish project principles and guidelines |
-| `/speckit-specify` | Write a specification (requirements, user stories) |
-| `/speckit-clarify` | Ask structured questions to de-risk ambiguity |
-| `/speckit-plan` | Create a detailed implementation plan |
-| `/speckit-checklist` | Generate quality checklists |
-| `/speckit-tasks` | Break the plan into actionable tasks |
-| `/speckit-analyze` | Cross-artifact consistency report |
-| `/speckit-implement` | Execute all defined tasks |
-| `/speckit-taskstoissues` | Convert tasks into GitHub Issues |
-
-### 14e. Recommended workflow
-
-1. `/speckit-constitution` -- define project principles (once per project)
-2. `/speckit-specify` -- write requirements for a feature
-3. `/speckit-plan` -- create the technical plan
-4. `/speckit-tasks` -- generate actionable task items
-5. `/speckit-implement` -- build it
-
-Each step produces artifacts in `specs/` that the next step references.
-
 ## Day-to-day commands
 
 ```bash
 # Start
-OPENCLAW_IMAGE=openclaw:custom docker compose up -d openclaw-gateway
+docker compose up -d openclaw-gateway
 
 # Stop
 docker compose down
@@ -625,7 +688,38 @@ git fetch upstream
 git merge upstream/main
 docker build -t openclaw:local -f Dockerfile .
 docker build -t openclaw:custom -f Dockerfile.custom .
+docker compose up -d openclaw-gateway --force-recreate
 ```
+
+### [Ollama only] day-to-day commands
+
+```bash
+# Restart Ollama (without overwriting config)
+launchctl kickstart -k gui/$(id -u)/homebrew.mxcl.ollama
+
+# Check loaded Ollama models
+curl -s http://127.0.0.1:11434/api/ps | python3 -c "import sys,json; [print(f\"{m['name']}: loaded\") for m in json.load(sys.stdin)['models']]"
+
+# Preload model after reboot
+curl -s http://127.0.0.1:11434/api/chat \
+  -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"hi"}],"stream":false,"keep_alive":-1}' > /dev/null
+```
+
+## Memory budget [Ollama mode] (24 GB Mac)
+
+| Component                     | RAM          |
+| ----------------------------- | ------------ |
+| macOS + system                | ~6 GB        |
+| Docker VM (gateway + whisper) | 4 GB         |
+| Ollama llama3.1:8b            | ~5 GB        |
+| Ollama nomic-embed-text       | ~0.3 GB      |
+| Remaining                     | ~8.7 GB free |
+
+**Important:** Set Docker Desktop to **4 GB RAM** in Settings > Resources. The default (~8 GB) leaves too little memory for Ollama, causing model loading timeouts.
+
+## Memory budget [Anthropic mode]
+
+No special memory requirements. Docker Desktop can use the default 8 GB. No local model inference.
 
 ## Adding more tools to the container
 
@@ -645,21 +739,25 @@ docker build -t openclaw:local \
 
 ## Troubleshooting
 
-### Config invalid: Unrecognized key "auth" under agents.defaults
-
-Auth profiles belong at the top-level `auth.profiles` key in `openclaw.json`, not under `agents.defaults.auth`. See the config in Step 5d.
-
-### Auth profile not found / "Missing auth - anthropic"
+### Auth profile not found / "Missing auth - anthropic" [Anthropic only]
 
 The gateway looks for `auth-profiles.json` in `~/.openclaw/agents/main/agent/`, not `~/.openclaw/agents/default/`. Ensure the file is at the correct path.
 
-### Connection reset on health check right after start
+### Ollama inference times out / gateway returns "Request timed out" [Ollama only]
 
-The gateway needs a few seconds to initialize. Wait 8-10 seconds after `docker compose up` before probing `/healthz`.
+1. Check if the model is loaded: `curl -s http://127.0.0.1:11434/api/ps`
+2. If empty, preload it: `curl -s http://127.0.0.1:11434/api/chat -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"hi"}],"stream":false,"keep_alive":-1}'`
+3. Check memory pressure: `memory_pressure` -- if "free pages" is very low, reduce Docker RAM or use a smaller model
+4. After a reboot, the model needs to be loaded on first request (~30-60s). Send a warmup request or use the preload command above.
+
+### Ollama KEEP_ALIVE resets after brew upgrade [Ollama only]
+
+`brew upgrade ollama` may overwrite the launchd plist. After upgrading, re-add `OLLAMA_KEEP_ALIVE` to `~/Library/LaunchAgents/homebrew.mxcl.ollama.plist` and reload with `launchctl kickstart -k gui/$(id -u)/homebrew.mxcl.ollama`.
 
 ### Config invalid: Unrecognized key under agents.defaults
 
 `openclaw.json` is strict about its schema. Common mistakes:
+
 - `elevated` belongs under `tools.exec.security`, not `agents.defaults.elevated`
 - `auth.profiles` is a top-level key, not under `agents.defaults.auth`
 
@@ -670,23 +768,34 @@ If the gateway crash-loops with "Config invalid", check `docker compose logs ope
 `docker compose restart` reuses the existing container -- it does NOT re-read `.env`. You must recreate the container:
 
 ```bash
-docker compose down && docker compose up -d openclaw-gateway
+docker compose up -d openclaw-gateway --force-recreate
 ```
+
+### Context window filling up (87% used warning) [Ollama only]
+
+Type `/new` in the OpenClaw chat to start a fresh session with a clean context window. Llama 3.1 8B has 128k context but long conversations fill it up.
 
 ### GH_TOKEN picked up as github-copilot provider
 
-This is expected. OpenClaw auto-detects `GH_TOKEN` as a GitHub Copilot credential. It works alongside the Anthropic auth profile.
+This is expected. OpenClaw auto-detects `GH_TOKEN` as a GitHub Copilot credential. It works alongside the Ollama provider.
+
+## Volume access summary
+
+| Container path                   | Host path               | Purpose                |
+| -------------------------------- | ----------------------- | ---------------------- |
+| `/home/node/.openclaw`           | `~/.openclaw`           | Config, auth, sessions |
+| `/home/node/.openclaw/workspace` | `~/.openclaw/workspace` | Coding projects        |
+
+The container only has access to these paths. The rest of the host filesystem is inaccessible.
 
 ## File overview
 
-| File | Contains secrets? | Committed? | Purpose |
-|------|:-:|:-:|---------|
-| `Dockerfile` | No | Yes | Base OpenClaw image (upstream) |
-| `Dockerfile.custom` | No | Yes | Custom tool additions (gh, etc.) |
-| `docker-compose.yml` | No | Yes | Service definitions (gateway + cli) |
-| `.env` | **Yes** | **No** (gitignored) | Runtime secrets and config |
-| `~/.openclaw/openclaw.json` | **Yes** (gateway token) | **No** (outside repo) | Gateway and agent config |
-| `~/.openclaw/agents/main/agent/auth-profiles.json` | **Yes** (Claude token) | **No** (outside repo) | Claude auth token |
-| `claude-credentials` Docker volume | **Yes** (Claude Code API key) | **No** (Docker volume) | Claude Code credentials for ACP |
-| `scripts/docker/entrypoint-custom.sh` | No | Yes | Seeds spec-kit skills and agent workspace on startup |
-| `scripts/docker/speckit-workspace/AGENTS.md` | No | Yes | Spec Architect agent instructions template |
+| File                                                |    Contains secrets?    |      Committed?       | Purpose                                             | Mode      |
+| --------------------------------------------------- | :---------------------: | :-------------------: | --------------------------------------------------- | --------- |
+| `Dockerfile`                                        |           No            |          Yes          | Base OpenClaw image (upstream)                      | Both      |
+| `Dockerfile.custom`                                 |           No            |          Yes          | Custom tool additions (gh, ffmpeg)                  | Both      |
+| `docker-compose.yml`                                |           No            |          Yes          | Service definitions (gateway + cli + whisper)       | Both      |
+| `.env`                                              |         **Yes**         |  **No** (gitignored)  | Runtime secrets and config                          | Both      |
+| `~/.openclaw/openclaw.json`                         | **Yes** (gateway token) | **No** (outside repo) | Gateway, model providers, and agent config          | Both      |
+| `~/.openclaw/agents/main/agent/auth-profiles.json`  | **Yes** (Claude token)  | **No** (outside repo) | Claude auth token                                   | Anthropic |
+| `~/Library/LaunchAgents/homebrew.mxcl.ollama.plist` |           No            |          No           | Ollama service config (keep-alive, flash attention) | Ollama    |
