@@ -10,7 +10,7 @@ This guide is designed to be followed by an AI agent assisting a human. Each ste
 
 > Which model provider would you like to use?
 >
-> **A) Local Ollama (free, private)** -- Runs LLM inference on your Mac via Ollama. Requires Apple Silicon and enough RAM (24 GB+ recommended). Models: Llama 3.1 8B (main) + Qwen 2.5 Coder 7B (coding subagent). Zero API cost.
+> **A) Local Ollama (free, private)** -- Runs LLM inference on your Mac via Ollama. Requires Apple Silicon and enough RAM (24 GB+ recommended). Models: Llama 3.1 8B (main) + Qwen 3 14B (coding subagent). Zero API cost.
 >
 > **B) Anthropic Claude (paid, cloud)** -- Uses Claude via API key or setup token. Requires an Anthropic API key or Claude Pro/Max subscription. Better quality but costs money per request.
 
@@ -34,7 +34,7 @@ This guide is designed to be followed by an AI agent assisting a human. Each ste
 │                                  │
 │  Ollama (brew service)           │
 │  ├─ llama3.1:8b    (main agent)  │
-│  └─ qwen2.5-coder:7b (subagent) │
+│  └─ qwen3:14b      (subagent)   │
 │  Bound to 127.0.0.1:11434       │
 │                                  │
 │  ┌────────────────────────────┐  │
@@ -119,7 +119,7 @@ brew services start ollama
 
 ```bash
 ollama pull llama3.1:8b        # Main agent model (~5 GB)
-ollama pull qwen2.5-coder:7b   # Coding subagent model (~4.7 GB)
+ollama pull qwen3:14b          # Coding subagent model (~9.3 GB)
 ollama pull nomic-embed-text   # Embedding model for memory (~274 MB)
 ```
 
@@ -337,12 +337,12 @@ mkdir -p ~/.openclaw/agents/main/agent ~/.openclaw/workspace
             "reasoning": false,
             "input": ["text"],
             "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 128000,
+            "contextWindow": 32768,
             "maxTokens": 8192
           },
           {
-            "id": "qwen2.5-coder:7b",
-            "name": "Qwen 2.5 Coder 7B",
+            "id": "qwen3:14b",
+            "name": "Qwen 3 14B",
             "reasoning": false,
             "input": ["text"],
             "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
@@ -359,7 +359,13 @@ mkdir -p ~/.openclaw/agents/main/agent ~/.openclaw/workspace
         "primary": "ollama/llama3.1:8b"
       },
       "subagents": {
-        "model": "ollama/qwen2.5-coder:7b"
+        "model": "ollama/qwen3:14b"
+      },
+      "heartbeat": {
+        "every": "0m"
+      },
+      "llm": {
+        "idleTimeoutSeconds": 300
       },
       "timeoutSeconds": 900,
       "memorySearch": {
@@ -368,6 +374,19 @@ mkdir -p ~/.openclaw/agents/main/agent ~/.openclaw/workspace
         "model": "nomic-embed-text",
         "remote": {
           "baseUrl": "http://host.docker.internal:11434"
+        }
+      }
+    }
+  },
+  "plugins": {
+    "entries": {
+      "deepgram": { "enabled": false },
+      "ollama": { "enabled": true },
+      "acpx": {
+        "enabled": true,
+        "config": {
+          "permissionMode": "approve-all",
+          "timeoutSeconds": 600
         }
       }
     }
@@ -393,7 +412,12 @@ mkdir -p ~/.openclaw/agents/main/agent ~/.openclaw/workspace
 ```
 
 - `models.providers.ollama.baseUrl` uses `host.docker.internal` to reach the host's Ollama service from inside Docker.
-- `agents.defaults.subagents.model` routes coding tasks spawned via `sessions_spawn` to Qwen 2.5 Coder.
+- `agents.defaults.subagents.model` routes coding tasks spawned via `sessions_spawn` to Qwen 3 14B.
+- `agents.defaults.heartbeat.every: "0m"` disables heartbeat. Periodic heartbeats are too slow and error-prone with local models (can cause runaway agent loops and context overflow on small models).
+- `agents.defaults.llm.idleTimeoutSeconds: 300` releases model connections after 5 minutes of inactivity.
+- `plugins.entries.acpx` enables the embedded ACP runtime backend for subagent support. `permissionMode: "approve-all"` lets subagents read/write freely (required for headless Docker -- no one is present to approve manually). `timeoutSeconds: 600` caps subagent turns at 10 minutes (local models on Apple Silicon need more time than cloud APIs).
+- `plugins.entries.ollama` enables the Ollama provider plugin for model discovery.
+- `plugins.entries.deepgram` is disabled (not needed when using local Whisper).
 - `agents.defaults.memorySearch` uses `nomic-embed-text` via Ollama for vector memory search (conversation recall, session context). Without this, memory falls back to OpenAI embeddings which requires a paid API key.
 
 ### [Anthropic mode] openclaw.json
@@ -712,10 +736,11 @@ curl -s http://127.0.0.1:11434/api/chat \
 | macOS + system                | ~6 GB        |
 | Docker VM (gateway + whisper) | 4 GB         |
 | Ollama llama3.1:8b            | ~5 GB        |
+| Ollama qwen3:14b              | ~9.3 GB      |
 | Ollama nomic-embed-text       | ~0.3 GB      |
-| Remaining                     | ~8.7 GB free |
+| **Total**                     | **~24.6 GB** |
 
-**Important:** Set Docker Desktop to **4 GB RAM** in Settings > Resources. The default (~8 GB) leaves too little memory for Ollama, causing model loading timeouts.
+**Important:** With both models loaded, a 24 GB Mac is at capacity. Set Docker Desktop to **4 GB RAM** in Settings > Resources. The default (~8 GB) leaves too little memory for Ollama. Only one model is active at a time (Ollama swaps models as needed), but if both are loaded simultaneously, expect memory pressure. Consider using `ollama stop qwen3:14b` when not needed to free ~9 GB.
 
 ## Memory budget [Anthropic mode]
 
@@ -773,7 +798,7 @@ docker compose up -d openclaw-gateway --force-recreate
 
 ### Context window filling up (87% used warning) [Ollama only]
 
-Type `/new` in the OpenClaw chat to start a fresh session with a clean context window. Llama 3.1 8B has 128k context but long conversations fill it up.
+Type `/new` in the OpenClaw chat to start a fresh session with a clean context window. Models are configured with 32k context windows. Long conversations or tool-heavy subagent loops fill this up quickly. If the agent crashes with "Context overflow: prompt too large", use `/new` or `/reset` to clear the session.
 
 ### GH_TOKEN picked up as github-copilot provider
 
