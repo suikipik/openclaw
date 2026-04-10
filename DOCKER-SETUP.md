@@ -1,6 +1,6 @@
 # OpenClaw Docker Setup Guide
 
-Personal Docker setup for running OpenClaw in an isolated container. Supports two provider modes: local Ollama (free) or Anthropic Claude (paid).
+Personal Docker setup for running OpenClaw in an isolated container. Supports three provider modes: Alibaba Cloud DashScope/Qwen (cheap/free tier), local Ollama (free), or Anthropic Claude (paid).
 
 This guide is designed to be followed by an AI agent assisting a human. Each step clearly marks what the agent can automate vs what requires human input.
 
@@ -13,9 +13,12 @@ This guide is designed to be followed by an AI agent assisting a human. Each ste
 > **A) Local Ollama (free, private)** -- Runs LLM inference on your Mac via Ollama. Requires Apple Silicon and enough RAM (24 GB+ recommended). Models: Llama 3.1 8B (main) + Qwen 3 14B (coding subagent). Zero API cost.
 >
 > **B) Anthropic Claude (paid, cloud)** -- Uses Claude via API key or setup token. Requires an Anthropic API key or Claude Pro/Max subscription. Better quality but costs money per request.
+>
+> **C) Alibaba Cloud DashScope / Qwen 3.6 Plus (cheap, cloud)** -- Uses Qwen 3.6 Plus via Alibaba Cloud Model Studio API. 1M context window, strong agentic/coding capabilities. Free tier: 1M tokens for 90 days (Singapore region only). Pay-as-you-go after that: ~$0.28/M input tokens.
 
 - If the human chooses **A (Ollama)**: follow this guide as written.
 - If the human chooses **B (Anthropic)**: skip Step 2 (Ollama install), and in Step 6 replace the `models.providers.ollama` block with an `auth.profiles` block pointing to Anthropic. Set `agents.defaults.model.primary` to `anthropic/claude-sonnet-4-6`. The human will need to run `claude setup-token` and write the output to `~/.openclaw/agents/main/agent/auth-profiles.json`. Docker Desktop can keep the default 8 GB RAM since Ollama is not needed.
+- If the human chooses **C (DashScope)**: skip Step 2 (Ollama install), follow Step 2C (DashScope setup) instead, and in Step 6 use the DashScope mode config. Docker Desktop can keep the default 8 GB RAM since no local models are needed.
 
 ## Prerequisites
 
@@ -73,16 +76,38 @@ This guide is designed to be followed by an AI agent assisting a human. Each ste
 └──────────────────────────────────┘
 ```
 
+### [DashScope mode]
+
+```
+┌──────────────────────────────────────┐
+│         macOS Host                   │
+│                                      │
+│  ┌────────────────────────────────┐  │
+│  │     Docker (8 GB VM)           │  │
+│  │                                │  │
+│  │  openclaw-gateway              │  │
+│  │  ├─ port 18789 (gateway)       │  │
+│  │  └─ port 18790 (bridge)        │  │
+│  │  └─ → DashScope API            │  │
+│  │       (ap-southeast-1)          │  │
+│  │                                │  │
+│  │  whisper (transcription)       │  │
+│  │  └─ port 8000                  │  │
+│  └────────────────────────────────┘  │
+└──────────────────────────────────────┘
+```
+
 ## Secrets inventory
 
-| Secret                   | How to obtain                                       | Written to                                                  | Required for    |
-| ------------------------ | --------------------------------------------------- | ----------------------------------------------------------- | --------------- |
-| `OPENCLAW_GATEWAY_TOKEN` | Agent generates via `openssl rand -hex 32`          | `.env`, `~/.openclaw/openclaw.json`                         | Both            |
-| `GH_TOKEN`               | Human provides (https://github.com/settings/tokens) | `.env`                                                      | Both            |
-| `CLAUDE_OAUTH_TOKEN`     | Human runs `claude setup-token`                     | `~/.openclaw/agents/main/agent/auth-profiles.json`          | Anthropic only  |
-| `TELEGRAM_BOT_TOKEN`     | Human creates bot via @BotFather on Telegram        | `.env`, `~/.openclaw/openclaw.json`                         | Both (optional) |
-| `GIT_USER_NAME`          | Human provides                                      | `.env` (passed as `GIT_AUTHOR_NAME`/`GIT_COMMITTER_NAME`)   | Both            |
-| `GIT_USER_EMAIL`         | Human provides                                      | `.env` (passed as `GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_EMAIL`) | Both            |
+| Secret                   | How to obtain                                       | Written to                                                  | Required for   |
+| ------------------------ | --------------------------------------------------- | ----------------------------------------------------------- | -------------- |
+| `OPENCLAW_GATEWAY_TOKEN` | Agent generates via `openssl rand -hex 32`          | `.env`, `~/.openclaw/openclaw.json`                         | Both           |
+| `GH_TOKEN`               | Human provides (https://github.com/settings/tokens) | `.env`                                                      | Both           |
+| `CLAUDE_OAUTH_TOKEN`     | Human runs `claude setup-token`                     | `~/.openclaw/agents/main/agent/auth-profiles.json`          | Anthropic only |
+| `DASHSCOPE_API_KEY`      | Human creates in Model Studio (Singapore region)    | `.env`, `~/.openclaw/openclaw.json`                         | DashScope only |
+| `TELEGRAM_BOT_TOKEN`     | Human creates bot via @BotFather on Telegram        | `.env`, `~/.openclaw/openclaw.json`                         | All (optional) |
+| `GIT_USER_NAME`          | Human provides                                      | `.env` (passed as `GIT_AUTHOR_NAME`/`GIT_COMMITTER_NAME`)   | Both           |
+| `GIT_USER_EMAIL`         | Human provides                                      | `.env` (passed as `GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_EMAIL`) | Both           |
 
 ## Step 1: Fork and clone the repo
 
@@ -211,6 +236,43 @@ mkdir -p ~/.openclaw/agents/main/agent
 }
 ```
 
+## Step 2C: Configure DashScope API key [DashScope only]
+
+**Skip this step if using Ollama or Anthropic.**
+
+**Requires human input** for the DashScope API key.
+
+### 2C-a. Create an Alibaba Cloud account
+
+1. Go to https://www.alibabacloud.com and create a free account
+2. Go to Model Studio: https://modelstudio.console.alibabacloud.com/
+3. **Important:** Switch the region selector (top-right) to **Singapore** -- free tier (1M tokens / 90 days) is only available in this region
+4. Accept the Terms of Service
+
+### 2C-b. Create an API key
+
+1. In Model Studio (Singapore region), go to **API Keys** in the left sidebar
+2. Click **Create API Key**
+3. Choose **All** for permissions (grants access to all models including Qwen 3.6 Plus)
+4. Download the CSV or copy the key
+
+The CSV contains these fields:
+
+| Field              | Example                                                                | Used for                  |
+| ------------------ | ---------------------------------------------------------------------- | ------------------------- |
+| `apiKey`           | `sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`                                  | Authentication            |
+| `openAiCompatible` | `https://ws-xxxxx.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | Base URL in openclaw.json |
+
+**Agent instruction:** Ask the human to create the API key in the **Singapore** region and provide the key. Validate it starts with `sk-` and is 32+ characters. Also get the `openAiCompatible` URL from the CSV -- this is the workspace-specific endpoint (do NOT use the generic `dashscope-intl.aliyuncs.com`).
+
+### 2C-c. Billing notes
+
+- **Free tier:** 1M tokens per model, 90 days, Singapore region only
+- **Pay-as-you-go:** ~$0.28/M input tokens, ~$1.12/M output tokens (Qwen 3.6 Plus)
+- Free quota is consumed first before pay-as-you-go charges apply
+- Monitor usage in Model Studio console under Usage/Billing, or account-level at https://usercenter2-intl.aliyun.com/
+- DashScope also offers a **Coding Plan** (subscription) for heavy use -- requires a separate API key and base URL containing `coding` in the hostname. Standard pay-as-you-go keys cannot deduct from Coding Plan quota.
+
 ## Step 3: Create the custom Dockerfile
 
 **Agent can automate.** Write `Dockerfile.custom` to the repo root. This layers tools on top of the base OpenClaw image without modifying the upstream Dockerfile.
@@ -292,6 +354,13 @@ TELEGRAM_BOT_TOKEN=<ASK HUMAN: Telegram bot token, optional>
 
 ```env
 # Anthropic token stored in ~/.openclaw/agents/main/agent/auth-profiles.json (see Step 2B)
+```
+
+**[DashScope only]** -- add this line:
+
+```env
+# Alibaba Cloud DashScope — Singapore region (free tier eligible)
+DASHSCOPE_API_KEY=<ASK HUMAN: DashScope API key from Step 2C>
 ```
 
 **Agent instruction:** Do not use `cp .env.example` -- write the `.env` file directly with the values above. Ask the human to provide:
@@ -472,7 +541,101 @@ mkdir -p ~/.openclaw/agents/main/agent ~/.openclaw/workspace
 
 - `auth.profiles` references the token written in Step 2B-b.
 
-### Common notes (both modes)
+### [DashScope mode] openclaw.json
+
+```json
+{
+  "gateway": {
+    "mode": "local",
+    "bind": "lan",
+    "auth": {
+      "token": "<OPENCLAW_GATEWAY_TOKEN from Step 4>"
+    },
+    "controlUi": {
+      "allowedOrigins": ["http://localhost:18789", "http://127.0.0.1:18789"]
+    }
+  },
+  "models": {
+    "providers": {
+      "dashscope": {
+        "baseUrl": "<openAiCompatible URL from Step 2C CSV>",
+        "api": "openai-completions",
+        "apiKey": "<DASHSCOPE_API_KEY from Step 2C>",
+        "models": [
+          {
+            "id": "qwen3.6-plus",
+            "name": "Qwen 3.6 Plus",
+            "reasoning": true,
+            "input": ["text"],
+            "cost": { "input": 0.28, "output": 1.12, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 1000000,
+            "maxTokens": 65536
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "dashscope/qwen3.6-plus"
+      },
+      "heartbeat": {
+        "every": "0m"
+      },
+      "llm": {
+        "idleTimeoutSeconds": 300
+      },
+      "timeoutSeconds": 900,
+      "memorySearch": {
+        "enabled": true,
+        "provider": "openai",
+        "model": "text-embedding-v4",
+        "remote": {
+          "baseUrl": "<openAiCompatible URL from Step 2C CSV>",
+          "apiKey": "<DASHSCOPE_API_KEY from Step 2C>"
+        }
+      }
+    }
+  },
+  "plugins": {
+    "entries": {
+      "deepgram": { "enabled": false },
+      "acpx": {
+        "enabled": true,
+        "config": {
+          "permissionMode": "approve-all",
+          "timeoutSeconds": 600
+        }
+      }
+    }
+  },
+  "tools": {
+    "exec": {
+      "security": "full"
+    },
+    "media": {
+      "audio": {
+        "enabled": true,
+        "models": [
+          {
+            "provider": "openai",
+            "model": "small",
+            "baseUrl": "http://whisper:8000/v1"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+- `models.providers.dashscope` uses the OpenAI-compatible endpoint from Alibaba Cloud Model Studio. The `baseUrl` must be the workspace-specific URL from the CSV (containing `ap-southeast-1` for Singapore), not the generic `dashscope-intl.aliyuncs.com`.
+- `api: "openai-completions"` selects the OpenAI chat completions adapter (OpenClaw does not accept plain `"openai"` as an API type).
+- `agents.defaults.memorySearch` uses DashScope `text-embedding-v4` (Qwen3-Embedding) for vector memory search via the same OpenAI-compatible endpoint. No local Ollama needed.
+- `plugins.entries.ollama` is omitted -- not needed when using DashScope.
+
+### Common notes (all modes)
 
 - `tools.exec.security: "full"` auto-approves all command execution without prompting. This is safe because the Docker container is isolated -- it can only access the workspace and config volumes, not the host filesystem.
 
@@ -522,6 +685,7 @@ curl -fsS http://127.0.0.1:18789/readyz
 docker logs openclaw-openclaw-gateway-1 2>&1 | grep "agent model"
 # Expected [Ollama]: agent model: ollama/llama3.1:8b
 # Expected [Anthropic]: agent model: anthropic/claude-sonnet-4-6
+# Expected [DashScope]: agent model: dashscope/qwen3.6-plus
 
 # Model auth status [Anthropic only]
 docker compose run --rm -T openclaw-cli models status
@@ -746,6 +910,10 @@ curl -s http://127.0.0.1:11434/api/chat \
 
 No special memory requirements. Docker Desktop can use the default 8 GB. No local model inference.
 
+## Memory budget [DashScope mode]
+
+No special memory requirements. Docker Desktop can use the default 8 GB. No local model inference. All LLM and embedding calls go to Alibaba Cloud.
+
 ## Adding more tools to the container
 
 Edit `Dockerfile.custom` and add install commands between `USER root` and `USER node`, then rebuild:
@@ -820,7 +988,7 @@ The container only has access to these paths. The rest of the host filesystem is
 | `Dockerfile`                                        |           No            |          Yes          | Base OpenClaw image (upstream)                      | Both      |
 | `Dockerfile.custom`                                 |           No            |          Yes          | Custom tool additions (gh, ffmpeg)                  | Both      |
 | `docker-compose.yml`                                |           No            |          Yes          | Service definitions (gateway + cli + whisper)       | Both      |
-| `.env`                                              |         **Yes**         |  **No** (gitignored)  | Runtime secrets and config                          | Both      |
-| `~/.openclaw/openclaw.json`                         | **Yes** (gateway token) | **No** (outside repo) | Gateway, model providers, and agent config          | Both      |
+| `.env`                                              |         **Yes**         |  **No** (gitignored)  | Runtime secrets and config                          | All       |
+| `~/.openclaw/openclaw.json`                         | **Yes** (gateway token) | **No** (outside repo) | Gateway, model providers, and agent config          | All       |
 | `~/.openclaw/agents/main/agent/auth-profiles.json`  | **Yes** (Claude token)  | **No** (outside repo) | Claude auth token                                   | Anthropic |
 | `~/Library/LaunchAgents/homebrew.mxcl.ollama.plist` |           No            |          No           | Ollama service config (keep-alive, flash attention) | Ollama    |
